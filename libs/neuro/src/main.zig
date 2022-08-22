@@ -247,9 +247,9 @@ test "value multi-ref 2" {
     // backward pass
     try f.backward(std.testing.allocator);
 
-    var graph = try f.toGraphViz(std.testing.allocator);
-    std.debug.print("{s}\n", .{graph.items});
-    graph.deinit();
+    // var graph = try f.toGraphViz(std.testing.allocator);
+    // std.debug.print("{s}\n", .{graph.items});
+    // graph.deinit();
 
     try testing.expectEqual(@as(f16, 1.0), f.grad);
     try testing.expectEqual(@as(f16, 22.0), e.grad);
@@ -259,7 +259,7 @@ test "value multi-ref 2" {
     try testing.expectEqual(@as(f16, 29.0), a.grad);
 }
 
-test "value multi-ref 3" {
+test "value tanh" {
     var a = Value(f16).init(0.5);
     var b = a.tanh();
     try testing.expectEqual(@as(f16, 0.4621582), b.data);
