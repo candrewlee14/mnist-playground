@@ -7,7 +7,9 @@ const Op = enum(u8) {
     sub,
     div,
     pow,
+    // non-linearn
     relu,
+    tanh,
     none
 };
 
@@ -47,6 +49,15 @@ pub fn Value(comptime T: type) type {
             return Self{
                 .data = if (self.data > 0) self.data else 0,
                 .op = .relu,
+                ._prev = .{self, null},
+            };
+        }
+        pub fn tanh(self: *Self) Self {
+            const exp2 = @exp(self.data * 2);
+            return Self{
+                .data = (exp2 - 1)/(exp2 + 1),
+                .op = .tanh,
+                ._prev = .{self, null},
             };
         }
 
@@ -74,6 +85,46 @@ pub fn Value(comptime T: type) type {
             }
         }
 
+        pub fn toGraphViz(self: *Self, alloc: std.mem.Allocator) !std.ArrayList(u8) {
+            var str_builder = std.ArrayList(u8).init(alloc);
+            var writer = str_builder.writer();
+            _ = try writer.write("\ndigraph nodes {\n\tnode [shape=record];\n");
+
+            var visited = std.AutoArrayHashMap(*Self, void).init(alloc);
+            defer visited.deinit();
+
+            var topo = std.ArrayList(*Self).init(alloc);
+            defer topo.deinit();
+
+            try self.buildTopo(&topo, &visited);
+            for (topo.items) |node| {
+                const op_str = switch (node.op) {
+                    .add => "+",
+                    .sub => "-",
+                    .mul => "*",
+                    .div => "/",
+                    .pow => "^",
+                    .relu => "ReLU",
+                    .tanh => "tanh",
+                    .none => "=",
+                };
+                _ = try writer.print("\t\"{*}\" [label=\"data={d}|grad={d}\"];\n", 
+                    .{node, node.data, node.grad});
+                if (node.op != .none) {
+                    _ = try writer.print("\t\"{*}-op\" [label=\"{s}\"];\n",
+                        .{node, op_str});
+                    _ = try writer.print("\t\"{0*}-op\" -> \"{0*}\";\n", .{node});
+                }
+                for (node._prev) |o_child| {
+                    if (o_child) |child| {
+                        _ = try writer.print("\t\"{*}\" -> \"{*}-op\"\n", .{child, node});
+                    }
+                }
+            }
+            _ = try writer.write("}\n");
+            return str_builder;
+        }
+
         pub fn backward(self: *Self, alloc: std.mem.Allocator) std.mem.Allocator.Error!void {
             var visited = std.AutoArrayHashMap(*Self, void).init(alloc);
             defer visited.deinit();
@@ -87,25 +138,31 @@ pub fn Value(comptime T: type) type {
             var i : usize = topo.items.len;
             while (i > 0) : (i -= 1) {
                 var node = topo.items[i-1];
-                node.backwardHandler(node.op, node);
+                node.backwardHandler(node.op);
             }
         }
 
-        fn backwardHandler(self: *Self, op: Op, out: *const Value(T)) void {
+        fn backwardHandler(self: *const Self, op: Op) void {
             var left = self._prev[0];
             var right = self._prev[1];
             switch (op) {
                 .add => {
-                    left.?.grad += out.grad;            
-                    right.?.grad += out.grad;
+                    left.?.grad += self.grad;            
+                    right.?.grad += self.grad;
                 },
                 .sub => {
-                    left.?.grad += out.grad;            
-                    right.?.grad -= out.grad;
+                    left.?.grad += self.grad;            
+                    right.?.grad -= self.grad;
                 },
                 .mul => {
-                    left.?.grad += right.?.data * out.grad;            
-                    right.?.grad += left.?.data * out.grad;
+                    left.?.grad += right.?.data * self.grad;            
+                    right.?.grad += left.?.data * self.grad;
+                },
+                .relu => {
+                    left.?.grad += if (self.data > 0) self.grad else 0;
+                },
+                .tanh => {
+                    left.?.grad += (1 - (self.data * self.data)) * self.grad;
                 },
                 .none => {},
                 else => @panic("Unimplemented backward operation"),
@@ -116,7 +173,6 @@ pub fn Value(comptime T: type) type {
 
 test "value init" {
     var val = Value(f16).init(10.0);
-    std.debug.print("Sizeof Value(f16): {}\n", .{@sizeOf(Value(f16))});
     try testing.expectEqual(@as(f16, 10.0), val.data);
     try testing.expectEqual(@as(f16, 0), val.grad);
 }
@@ -190,11 +246,25 @@ test "value multi-ref 2" {
     try testing.expectEqual(@as(f16, (10.0 - 3.0) * (10.0 + 12.0)), f.data);
     // backward pass
     try f.backward(std.testing.allocator);
+
+    var graph = try f.toGraphViz(std.testing.allocator);
+    std.debug.print("{s}\n", .{graph.items});
+    graph.deinit();
+
     try testing.expectEqual(@as(f16, 1.0), f.grad);
     try testing.expectEqual(@as(f16, 22.0), e.grad);
     try testing.expectEqual(@as(f16, 7.0), d.grad);
     try testing.expectEqual(@as(f16, -22.0), c.grad);
     try testing.expectEqual(@as(f16, 7.0), b.grad);
     try testing.expectEqual(@as(f16, 29.0), a.grad);
+}
+
+test "value multi-ref 3" {
+    var a = Value(f16).init(0.5);
+    var b = a.tanh();
+    try testing.expectEqual(@as(f16, 0.4621582), b.data);
+    // backward pass
+    try b.backward(std.testing.allocator);
+    try testing.expectEqual(@as(f16, 0.7861328), a.grad);
 }
 
