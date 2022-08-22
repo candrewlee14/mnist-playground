@@ -11,34 +11,6 @@ const Op = enum(u8) {
     none
 };
 
-pub fn Backward(comptime T: type) type {
-    return struct {
-        const Self = @This();
-
-        left: *Value(T),
-        right: ?*Value(T) = null,
-
-        pub fn backward(self: *Self, op: Op, out: *const Value(T)) void {
-            switch (op) {
-                .add => {
-                    self.left.grad += out.grad;            
-                    self.right.?.grad += out.grad;
-                },
-                .sub => {
-                    self.left.grad += out.grad;            
-                    self.right.?.grad -= out.grad;
-                },
-                .mul => {
-                    self.left.grad += self.right.?.data * out.grad;            
-                    self.right.?.grad += self.left.data * out.grad;
-                },
-                .none => {},
-                else => @panic("Unimplemented backward operation"),
-            }
-        }
-    };
-}
-
 pub fn Value(comptime T: type) type {
     return struct {
         const Self = @This();
@@ -48,25 +20,17 @@ pub fn Value(comptime T: type) type {
         // The operation that created this value
         op: Op = .none,
         _prev: [2]?*Self = .{null} ** 2,
-        _backward: Backward(T),
 
         pub fn init(value: T) Self {
             var self = Self{
                 .data = value, 
-                ._backward = undefined,
             }; 
-            self._backward = Backward(T){ .left = &self };
             return self;
         }
-
         pub fn add(self: *Self, other: *Self) Self {
             return Self{
                 .data = self.data + other.data,
                 .op = .add,
-                ._backward = Backward(T){
-                    .left = self,
-                    .right = other,
-                },
                 ._prev = .{self, other}
             }; 
         }
@@ -75,10 +39,6 @@ pub fn Value(comptime T: type) type {
             return Self{
                 .data = self.data - other.data,
                 .op = .sub,
-                ._backward = Backward(T){
-                    .left = self,
-                    .right = other,
-                },
                 ._prev = .{self, other}
             }; 
         }
@@ -94,10 +54,6 @@ pub fn Value(comptime T: type) type {
             return Self{
                 .data = self.data * other.data,
                 .op = .mul,
-                ._backward = Backward(T){
-                    .left = self,
-                    .right = other,
-                },
                 ._prev = .{self, other}
             }; 
         }
@@ -131,7 +87,28 @@ pub fn Value(comptime T: type) type {
             var i : usize = topo.items.len;
             while (i > 0) : (i -= 1) {
                 var node = topo.items[i-1];
-                node._backward.backward(node.op, node);
+                node.backwardHandler(node.op, node);
+            }
+        }
+
+        fn backwardHandler(self: *Self, op: Op, out: *const Value(T)) void {
+            var left = self._prev[0];
+            var right = self._prev[1];
+            switch (op) {
+                .add => {
+                    left.?.grad += out.grad;            
+                    right.?.grad += out.grad;
+                },
+                .sub => {
+                    left.?.grad += out.grad;            
+                    right.?.grad -= out.grad;
+                },
+                .mul => {
+                    left.?.grad += right.?.data * out.grad;            
+                    right.?.grad += left.?.data * out.grad;
+                },
+                .none => {},
+                else => @panic("Unimplemented backward operation"),
             }
         }
     };
@@ -139,6 +116,7 @@ pub fn Value(comptime T: type) type {
 
 test "value init" {
     var val = Value(f16).init(10.0);
+    std.debug.print("Sizeof Value(f16): {}\n", .{@sizeOf(Value(f16))});
     try testing.expectEqual(@as(f16, 10.0), val.data);
     try testing.expectEqual(@as(f16, 0), val.grad);
 }
