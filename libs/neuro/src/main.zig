@@ -1,9 +1,16 @@
 const std = @import("std");
 const testing = std.testing;
 
-const Op = enum(u8) {
+pub const NonLinearOp = enum {
+    relu,   
+    tanh,   
+    none,
+};
+
+pub const Op = enum {
     add,
     mul,
+    mulv,
     sub,
     div,
     pow,
@@ -52,6 +59,7 @@ pub fn Value(comptime T: type) type {
                 ._prev = .{self, null},
             };
         }
+
         pub fn tanh(self: *Self) Self {
             const exp2 = @exp(self.data * 2);
             return Self{
@@ -66,6 +74,14 @@ pub fn Value(comptime T: type) type {
                 .data = self.data * other.data,
                 .op = .mul,
                 ._prev = .{self, other}
+            }; 
+        }
+
+        pub fn mulV(self: *Self, other: T) Self {
+            return Self{
+                .data = self.data * other,
+                .op = .mulv,
+                ._prev = .{self, null}
             }; 
         }
 
@@ -102,6 +118,7 @@ pub fn Value(comptime T: type) type {
                     .add => "+",
                     .sub => "-",
                     .mul => "*",
+                    .mulv => "* input",
                     .div => "/",
                     .pow => "^",
                     .relu => "ReLU",
@@ -111,7 +128,7 @@ pub fn Value(comptime T: type) type {
                 _ = try writer.print("\t\"{*}\" [label=\"data={d}|grad={d}\"];\n", 
                     .{node, node.data, node.grad});
                 if (node.op != .none) {
-                    _ = try writer.print("\t\"{*}-op\" [label=\"{s}\"];\n",
+                    _ = try writer.print("\t\"{*}-op\" [shape=ellipse, label=\"{s}\"];\n",
                         .{node, op_str});
                     _ = try writer.print("\t\"{0*}-op\" -> \"{0*}\";\n", .{node});
                 }
@@ -157,6 +174,9 @@ pub fn Value(comptime T: type) type {
                 .mul => {
                     left.?.grad += right.?.data * self.grad;            
                     right.?.grad += left.?.data * self.grad;
+                },
+                .mulv => {
+                    left.?.grad += self.data/left.?.data * self.grad;            
                 },
                 .relu => {
                     left.?.grad += if (self.data > 0) self.grad else 0;
@@ -214,6 +234,18 @@ test "value mul" {
     try testing.expectEqual(@as(f16, 1.0), c.grad);
     try testing.expectEqual(@as(f16, 12.0), a.grad);
     try testing.expectEqual(@as(f16, 10.0), b.grad);
+}
+
+test "value mulV" {
+    var a = Value(f16).init(10.0);
+    var b : f16 = 12;
+    // forward pass
+    var c = a.mulV(b);
+    try testing.expectEqual(@as(f16, 120.0), c.data);
+    // backward pass
+    try c.backward(std.testing.allocator);
+    try testing.expectEqual(@as(f16, 1.0), c.grad);
+    try testing.expectEqual(@as(f16, 12.0), a.grad);
 }
 
 test "value multi-ref 1" {
