@@ -1,5 +1,7 @@
 const std = @import("std");
 const testing = std.testing;
+const Allocator = std.mem.Allocator;
+const tac = testing.allocator;
 
 pub const NonLinearOp = enum {
     relu,   
@@ -14,9 +16,10 @@ pub const Op = enum {
     sub,
     div,
     pow,
-    // non-linearn
+    // non-linear
     relu,
     tanh,
+    // no op
     none
 };
 
@@ -28,62 +31,98 @@ pub fn Value(comptime T: type) type {
         grad: T = 0,
         // The operation that created this value
         op: Op = .none,
-        _prev: [2]?*Self = .{null} ** 2,
+        _prev: std.ArrayList(*Self),
 
-        pub fn init(value: T) Self {
+        pub fn init(alloc: Allocator, value: T) !Self {
             var self = Self{
                 .data = value, 
+                ._prev = try std.ArrayList(*Self).initCapacity(alloc, 2),
             }; 
             return self;
         }
-        pub fn add(self: *Self, other: *Self) Self {
-            return Self{
-                .data = self.data + other.data,
-                .op = .add,
-                ._prev = .{self, other}
-            }; 
+        pub fn deinit(self: *Self) void {
+            self._prev.deinit();
         }
 
-        pub fn sub(self: *Self, other: *Self) Self {
-            return Self{
-                .data = self.data - other.data,
-                .op = .sub,
-                ._prev = .{self, other}
-            }; 
+        pub fn setAddAll(self: *Self, vals: []Value(T)) !void {
+            self.op = .add;
+            const not_initted = self._prev.items.len == 0;
+            for (vals) |*v| {
+                self.data += v.data;
+                if (not_initted) {
+                    try self._prev.append(v);
+                }
+            }
         }
 
-        pub fn relu(self: *Self) Self {
-            return Self{
-                .data = if (self.data > 0) self.data else 0,
-                .op = .relu,
-                ._prev = .{self, null},
-            };
+        pub fn setMulAll(self: *Self, vals: []Value(T)) !void {
+            self.op = .mul;
+            const not_initted = self._prev.items.len == 0;
+            for (vals) |*v| {
+                self.data *= v.data;
+                if (not_initted) {
+                    try self._prev.append(v);
+                }
+            }
+        }
+        pub fn setAdd(self: *Self, one: *Self, two: *Self) void {
+            if (self._prev.items.len == 0) {
+                self._prev.appendAssumeCapacity(one); 
+                self._prev.appendAssumeCapacity(two);
+            }
+            self.data = one.data + two.data;
+            self.op = .add;
+        }
+        pub fn setAddV(self: *Self, one: *Self, two: T) void {
+            if (self._prev.items.len == 0) {
+                self._prev.appendAssumeCapacity(one); 
+            }
+            self.data = one.data + two;
+            self.op = .add;
+        }
+        pub fn setSub(self: *Self, one: *Self, two: *Self) void {
+            if (self._prev.items.len == 0) {
+                self._prev.appendAssumeCapacity(one); 
+                self._prev.appendAssumeCapacity(two);
+            }
+            self.data = one.data - two.data;
+            self.op = .sub;
         }
 
-        pub fn tanh(self: *Self) Self {
-            const exp2 = @exp(self.data * 2);
-            return Self{
-                .data = (exp2 - 1)/(exp2 + 1),
-                .op = .tanh,
-                ._prev = .{self, null},
-            };
+        pub fn setMul(self: *Self, one: *Self, two: *Self) void {
+            if (self._prev.items.len == 0) {
+                self._prev.appendAssumeCapacity(one); 
+                self._prev.appendAssumeCapacity(two);
+            }
+            self.data = one.data * two.data;
+            self.op = .mul;
         }
 
-        pub fn mul(self: *Self, other: *Self) Self {
-            return Self{
-                .data = self.data * other.data,
-                .op = .mul,
-                ._prev = .{self, other}
-            }; 
+        pub fn setMulV(self: *Self, one: *Self, two: T) void {
+            if (self._prev.items.len == 0) {
+                self._prev.appendAssumeCapacity(one); 
+            }
+            self.data = one.data * two;
+            self.op = .mulv;
         }
 
-        pub fn mulV(self: *Self, other: T) Self {
-            return Self{
-                .data = self.data * other,
-                .op = .mulv,
-                ._prev = .{self, null}
-            }; 
+        pub fn setRelu(self: *Self, one: *Self) void {
+            if (self._prev.items.len == 0) {
+                self._prev.appendAssumeCapacity(one); 
+            }
+            self.data = if (one.data > 0) one.data else 0;
+            self.op = .relu;
         }
+
+        pub fn setTanh(self: *Self, one: *Self) void {
+            if (self._prev.items.len == 0) {
+                self._prev.appendAssumeCapacity(one); 
+            }
+            const exp2 = @exp(one.data * 2);
+            self.data = (exp2 - 1)/(exp2 + 1);
+            self.op = .tanh;
+        }
+
 
         fn buildTopo(
             self: *Self, 
@@ -92,10 +131,8 @@ pub fn Value(comptime T: type) type {
         ) std.mem.Allocator.Error!void {
             if (visited.get(self) == null) {
                 try visited.put(self, .{});
-                for (self._prev) |o_child| {
-                    if (o_child) |child| {
-                        try child.buildTopo(topo, visited);
-                    }
+                for (self._prev.items) |child| {
+                    try child.buildTopo(topo, visited);
                 }
                 try topo.append(self);
             }
@@ -117,8 +154,8 @@ pub fn Value(comptime T: type) type {
                 const op_str = switch (node.op) {
                     .add => "+",
                     .sub => "-",
-                    .mul => "*",
-                    .mulv => "* input",
+                    .mul => "x",
+                    .mulv => "x input",
                     .div => "/",
                     .pow => "^",
                     .relu => "ReLU",
@@ -132,10 +169,8 @@ pub fn Value(comptime T: type) type {
                         .{node, op_str});
                     _ = try writer.print("\t\"{0*}-op\" -> \"{0*}\";\n", .{node});
                 }
-                for (node._prev) |o_child| {
-                    if (o_child) |child| {
-                        _ = try writer.print("\t\"{*}\" -> \"{*}-op\"\n", .{child, node});
-                    }
+                for (node._prev.items) |child| {
+                    _ = try writer.print("\t\"{*}\" -> \"{*}-op\"\n", .{child, node});
                 }
             }
             _ = try writer.write("}\n");
@@ -160,29 +195,34 @@ pub fn Value(comptime T: type) type {
         }
 
         fn backwardHandler(self: *const Self, op: Op) void {
-            var left = self._prev[0];
-            var right = self._prev[1];
             switch (op) {
                 .add => {
-                    left.?.grad += self.grad;            
-                    right.?.grad += self.grad;
+                    for (self._prev.items) |n| {
+                        n.grad += self.grad;
+                    }
                 },
                 .sub => {
-                    left.?.grad += self.grad;            
-                    right.?.grad -= self.grad;
+                    var left = self._prev.items[0];
+                    var right = self._prev.items[1];
+                    left.grad += self.grad;            
+                    right.grad -= self.grad;
                 },
                 .mul => {
-                    left.?.grad += right.?.data * self.grad;            
-                    right.?.grad += left.?.data * self.grad;
+                    for (self._prev.items) |n| {
+                        n.grad += (self.data / n.data * self.grad);
+                    }
                 },
                 .mulv => {
-                    left.?.grad += self.data/left.?.data * self.grad;            
+                    var left = self._prev.items[0];
+                    left.grad += self.data/left.data * self.grad;            
                 },
                 .relu => {
-                    left.?.grad += if (self.data > 0) self.grad else 0;
+                    var left = self._prev.items[0];
+                    left.grad += if (self.data > 0) self.grad else 0;
                 },
                 .tanh => {
-                    left.?.grad += (1 - (self.data * self.data)) * self.grad;
+                    var left = self._prev.items[0];
+                    left.grad += (1 - (self.data * self.data)) * self.grad;
                 },
                 .none => {},
                 else => @panic("Unimplemented backward operation"),
@@ -192,73 +232,98 @@ pub fn Value(comptime T: type) type {
 }
 
 test "value init" {
-    var val = Value(f16).init(10.0);
+    var val = try Value(f16).init(tac, 10.0);
+    defer val.deinit();
     try testing.expectEqual(@as(f16, 10.0), val.data);
     try testing.expectEqual(@as(f16, 0), val.grad);
 }
 
 test "value add" {
-    var a = Value(f16).init(10.0);
-    var b = Value(f16).init(12.0);
+    var a = try Value(f16).init(tac, 10.0);
+    defer a.deinit();
+    var b = try Value(f16).init(tac, 12.0);
+    defer b.deinit();
     // forward pass
-    var c = a.add(&b);
+    var c = try Value(f16).init(tac, 0.0);
+    defer c.deinit();
+    c.setAdd(&a, &b);
     try testing.expectEqual(@as(f16, 22.0), c.data);
     // backward pass
-    try c.backward(std.testing.allocator);
+    try c.backward(tac);
     try testing.expectEqual(@as(f16, 1.0), c.grad);
     try testing.expectEqual(@as(f16, 1.0), a.grad);
     try testing.expectEqual(@as(f16, 1.0), b.grad);
 }
 
 test "value sub" {
-    var a = Value(f16).init(10.0);
-    var b = Value(f16).init(12.0);
+    var a = try Value(f16).init(tac, 10.0);
+    defer a.deinit();
+    var b = try Value(f16).init(tac, 12.0);
+    defer b.deinit();
     // forward pass
-    var c = a.sub(&b);
+    var c = try Value(f16).init(tac, 0.0);
+    defer c.deinit();
+    c.setSub(&a, &b);
     try testing.expectEqual(@as(f16, -2.0), c.data);
     // backward pass
-    try c.backward(std.testing.allocator);
+    try c.backward(tac);
     try testing.expectEqual(@as(f16, 1.0), c.grad);
     try testing.expectEqual(@as(f16, 1.0), a.grad);
     try testing.expectEqual(@as(f16, -1.0), b.grad);
 }
 
 test "value mul" {
-    var a = Value(f16).init(10.0);
-    var b = Value(f16).init(12.0);
+    var a = try Value(f16).init(tac, 10.0);
+    defer a.deinit();
+    var b = try Value(f16).init(tac, 12.0);
+    defer b.deinit();
     // forward pass
-    var c = a.mul(&b);
+    var c = try Value(f16).init(tac, 0.0);
+    defer c.deinit();
+    c.setMul(&a, &b);
     try testing.expectEqual(@as(f16, 120.0), c.data);
     // backward pass
-    try c.backward(std.testing.allocator);
+    try c.backward(tac);
     try testing.expectEqual(@as(f16, 1.0), c.grad);
     try testing.expectEqual(@as(f16, 12.0), a.grad);
     try testing.expectEqual(@as(f16, 10.0), b.grad);
 }
 
 test "value mulV" {
-    var a = Value(f16).init(10.0);
+    var a = try Value(f16).init(tac, 10.0);
+    defer a.deinit();
     var b : f16 = 12;
     // forward pass
-    var c = a.mulV(b);
+    var c = try Value(f16).init(tac, 0.0);
+    defer c.deinit();
+    c.setMulV(&a, b);
     try testing.expectEqual(@as(f16, 120.0), c.data);
     // backward pass
-    try c.backward(std.testing.allocator);
+    try c.backward(tac);
     try testing.expectEqual(@as(f16, 1.0), c.grad);
     try testing.expectEqual(@as(f16, 12.0), a.grad);
 }
 
 test "value multi-ref 1" {
-    var a = Value(f16).init(10.0);
-    var b = Value(f16).init(12.0);
-    var c = Value(f16).init(3.0);
+    var a = try Value(f16).init(tac, 10.0);
+    var b = try Value(f16).init(tac, 12.0);
+    var c = try Value(f16).init(tac, 3.0);
+    defer a.deinit();
+    defer b.deinit();
+    defer c.deinit();
+    var d = try Value(f16).init(tac, 0.0);
+    var e = try Value(f16).init(tac, 0.0);
+    var f = try Value(f16).init(tac, 0.0);
+    defer d.deinit();
+    defer e.deinit();
+    defer f.deinit();
     // forward pass
-    var d = a.mul(&b);
-    var e = a.mul(&c);
-    var f = d.add(&e);
+    d.setMul(&a, &b);
+    e.setMul(&a, &c);
+    f.setAdd(&d, &e);
     try testing.expectEqual(@as(f16, 150.0), f.data);
     // backward pass
-    try f.backward(std.testing.allocator);
+    try f.backward(tac);
     try testing.expectEqual(@as(f16, 1.0), f.grad);
     try testing.expectEqual(@as(f16, 1.0), e.grad);
     try testing.expectEqual(@as(f16, 1.0), d.grad);
@@ -268,20 +333,25 @@ test "value multi-ref 1" {
 }
 
 test "value multi-ref 2" {
-    var a = Value(f16).init(10.0);
-    var b = Value(f16).init(12.0);
-    var c = Value(f16).init(3.0);
+    var a = try Value(f16).init(tac, 10.0);
+    var b = try Value(f16).init(tac, 12.0);
+    var c = try Value(f16).init(tac, 3.0);
+    defer a.deinit();
+    defer b.deinit();
+    defer c.deinit();
+    var d = try Value(f16).init(tac, 0.0);
+    var e = try Value(f16).init(tac, 0.0);
+    var f = try Value(f16).init(tac, 0.0);
+    defer d.deinit();
+    defer e.deinit();
+    defer f.deinit();
     // forward pass
-    var d = a.add(&b);
-    var e = a.sub(&c);
-    var f = d.mul(&e);
+    d.setAdd(&a, &b);
+    e.setSub(&a, &c);
+    f.setMul(&d, &e);
     try testing.expectEqual(@as(f16, (10.0 - 3.0) * (10.0 + 12.0)), f.data);
     // backward pass
-    try f.backward(std.testing.allocator);
-
-    // var graph = try f.toGraphViz(std.testing.allocator);
-    // std.debug.print("{s}\n", .{graph.items});
-    // graph.deinit();
+    try f.backward(tac);
 
     try testing.expectEqual(@as(f16, 1.0), f.grad);
     try testing.expectEqual(@as(f16, 22.0), e.grad);
@@ -292,11 +362,28 @@ test "value multi-ref 2" {
 }
 
 test "value tanh" {
-    var a = Value(f16).init(0.5);
-    var b = a.tanh();
+    var a = try Value(f16).init(tac, 0.5);
+    var b = try Value(f16).init(tac, 0.0);
+    b.setTanh(&a);
+    defer a.deinit();
+    defer b.deinit();
     try testing.expectEqual(@as(f16, 0.4621582), b.data);
     // backward pass
-    try b.backward(std.testing.allocator);
+    try b.backward(tac);
     try testing.expectEqual(@as(f16, 0.7861328), a.grad);
 }
 
+test "value addAll" {
+    var a = try Value(f16).init(tac, 10.0);
+    var b = try Value(f16).init(tac, 12.0);
+    var c = try Value(f16).init(tac, 3.0);
+    var d = try Value(f16).init(tac, 4.0);
+    var out = try Value(f16).init(tac, 0.0);
+    defer a.deinit();
+    defer b.deinit();
+    defer c.deinit();
+    defer d.deinit();
+    defer out.deinit();
+    try out.setAddAll(&.{a, b, c, d});
+    try testing.expectEqual(@as(f16, 29.0), out.data);
+}
