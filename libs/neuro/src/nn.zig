@@ -176,6 +176,7 @@ pub fn Layer(comptime T: type) type {
                 _ = try writer.write("}\n");
             }
             _ = try writer.print("\nsubgraph \"cluster_{*}\" {{\n", .{&self._out});
+            _ = try writer.write("margin=\"20\"\n");
             for (self._out.items) |*v| {
                 try v.writeGraphVizInternals(str_builder, cluster);
             }
@@ -237,6 +238,7 @@ pub fn MLP(comptime T: type) type {
             var str_builder = std.ArrayList(u8).init(alloc);
             var writer = str_builder.writer();
             _ = try writer.write("\ndigraph nodes {\n\tnode [shape=record];\n");
+            _ = try writer.write("graph [nodesep=\"0.1\", ranksep=\"2\"];");
             // self contained cluster to keep input outside
             _ = try writer.write("\tsubgraph cluster_1 {input [label=\"input\"];}\n");
 
@@ -292,16 +294,15 @@ pub fn MLP(comptime T: type) type {
 test "mlp run" {
     var prng = std.rand.DefaultPrng.init(1);
     var rand = prng.random();
-    var sizes : []const usize = &.{3, 4, 6, 6, 9};
+    var sizes : []const usize = &.{8, 16, 4};
     var mlp = try MLP(f32).init(tac, rand, sizes);
     defer mlp.deinit();
-    var x : [3]f32 = .{
-        1, 2, 3,
-    };
+    var x = [_]f32{1} ** 8;
     var outs = try mlp.run(&x);
+    outs = try mlp.run(&x);
     _ = outs;
     try mlp.backward(tac);
-    var graph = try mlp.toGraphViz(tac, false);
+    var graph = try mlp.toGraphViz(tac, true);
     defer graph.deinit();
     std.debug.print("\n{s}\n", .{graph.items});
 }
