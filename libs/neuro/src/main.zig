@@ -20,7 +20,21 @@ pub const Op = enum {
     relu,
     tanh,
     // no op
-    none
+    none,
+
+    pub fn toStr(self: Op) []const u8 {
+        return switch (self) {
+            .add => "+",
+            .sub => "-",
+            .mul => "x",
+            .mulv => "x input",
+            .div => "/",
+            .pow => "^",
+            .relu => "ReLU",
+            .tanh => "tanh",
+            .none => "=",
+        };
+    }
 };
 
 pub fn Value(comptime T: type) type {
@@ -138,6 +152,35 @@ pub fn Value(comptime T: type) type {
             }
         }
 
+        pub fn writeGraphVizInternals(self: *Self, str_builder: *std.ArrayList(u8), cluster: bool) !void {
+            // var writer = str_builder.writer();
+            // _ = try writer.print("\t\"{*}\" [label=\"data={d}|grad={d}\"];\n", 
+            //     .{self, self.data, self.grad});
+            // if (self.op != .none) {
+            //     _ = try writer.print("\t\"{*}-op\" [shape=ellipse, label=\"{s}\"];\n",
+            //         .{self, self.op.toStr()});
+            //     _ = try writer.print("\t\"{0*}-op\" -> \"{0*}\";\n", .{self});
+            // }
+            // if (self.op == .mulv) {
+            //     _ = try writer.print("\tinput -> \"{0*}-op\";\n", .{self});
+            // }
+            // for (self._prev.items) |child| {
+            //     _ = try writer.print("\t\"{*}\" -> \"{*}-op\"\n", .{child, self});
+            // }
+            _ = cluster;
+            var writer = str_builder.writer();
+            // _ = try writer.print("\t\"{*}\" [label=\"{s}|{{data={d}|grad={d} }}\"];\n", 
+            //     .{self, self.op.toStr(),self.data, self.grad});
+            _ = try writer.print("\t\"{*}\" [label=\"{s}\"];\n", 
+                 .{self, self.op.toStr()});
+            if (self.op == .mulv) {
+                _ = try writer.print("\tinput -> \"{0*}\";\n", .{self});
+            }
+            for (self._prev.items) |child| {
+                _ = try writer.print("\t\"{*}\" -> \"{*}\"\n", .{child, self});
+            }
+        }
+
         pub fn toGraphViz(self: *Self, alloc: std.mem.Allocator) !std.ArrayList(u8) {
             var str_builder = std.ArrayList(u8).init(alloc);
             var writer = str_builder.writer();
@@ -151,27 +194,7 @@ pub fn Value(comptime T: type) type {
 
             try self.buildTopo(&topo, &visited);
             for (topo.items) |node| {
-                const op_str = switch (node.op) {
-                    .add => "+",
-                    .sub => "-",
-                    .mul => "x",
-                    .mulv => "x input",
-                    .div => "/",
-                    .pow => "^",
-                    .relu => "ReLU",
-                    .tanh => "tanh",
-                    .none => "=",
-                };
-                _ = try writer.print("\t\"{*}\" [label=\"data={d}|grad={d}\"];\n", 
-                    .{node, node.data, node.grad});
-                if (node.op != .none) {
-                    _ = try writer.print("\t\"{*}-op\" [shape=ellipse, label=\"{s}\"];\n",
-                        .{node, op_str});
-                    _ = try writer.print("\t\"{0*}-op\" -> \"{0*}\";\n", .{node});
-                }
-                for (node._prev.items) |child| {
-                    _ = try writer.print("\t\"{*}\" -> \"{*}-op\"\n", .{child, node});
-                }
+                try node.writeGraphVizInternals(&str_builder);
             }
             _ = try writer.write("}\n");
             return str_builder;

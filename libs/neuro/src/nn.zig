@@ -10,8 +10,8 @@ pub fn Neuron(comptime T: type) type {
 
         b_and_ws: std.ArrayList(Value(T)),
         _signals: std.ArrayList(Value(T)),
-        _pre_bias: Value(T) = undefined,
-        _res: Value(T) = undefined,
+        _pre_bias: Value(T),
+        _res: Value(T),
         non_linear_op: engine.NonLinearOp, 
 
         fn initHelper(
@@ -89,18 +89,40 @@ pub fn Neuron(comptime T: type) type {
             self._res.grad = 0;
         }
 
-        pub fn run(self: *Self, inputs: []Value(T), out: *Value(T)) !void {
+        pub fn writeGraphVizInternals(self: *Self, str_builder: *std.ArrayList(u8), cluster: bool) !void {
+            var writer = str_builder.writer();
+            if (cluster) {
+                _ = try writer.print("\t\nsubgraph \"cluster_{*}\" {{\n\tstyle=filled; color=lightgray;\n", .{self});
+            }
+            for (self.b_and_ws.items) |*w| {
+                try w.writeGraphVizInternals(str_builder, cluster);
+            }
+            for (self._signals.items) |*w| {
+                try w.writeGraphVizInternals(str_builder, cluster);
+            }
+            try self._pre_bias.writeGraphVizInternals(str_builder, cluster);
+            try self._res.writeGraphVizInternals(str_builder, cluster);
+            if (cluster) {
+                _ = try writer.write("}\n");
+            }
+            _ = writer;
+        }
+
+        pub fn run(self: *Self, comptime InputT: type, inputs: []InputT, out: *Value(T)) !void {
             const n_in = self._signals.items.len;
             std.debug.assert(inputs.len == n_in);
-            std.debug.print("{any}\n", .{self._signals.items});
             self.zeroGrads();
-            // TODO: deinit Values from prevous runs
             var i : usize = 0;
             while (i < n_in) : (i += 1) {
-                std.debug.print("changing signal {}\n", .{i});
-                self._signals.items[i].setMul(&self.b_and_ws.items[i+1], &inputs[i]);
+                if (InputT == Value(T)) {
+                    self._signals.items[i].setMul(&self.b_and_ws.items[i+1], &inputs[i]);
+                } else if (InputT == T) {
+                    self._signals.items[i].setMulV(&self.b_and_ws.items[i+1], inputs[i]);
+                } else {
+                    @compileError("InputT must be type T or Value(T)");
+                }
             }
-            try self._pre_bias.setAddAll(inputs);
+            try self._pre_bias.setAddAll(self._signals.items);
             self._res.setAdd(&self._pre_bias, &self.b_and_ws.items[0]);
 
             switch (self.non_linear_op) {
@@ -142,11 +164,36 @@ pub fn Layer(comptime T: type) type {
             self._out.deinit();
         }
 
-        pub fn run(self: *Self, inputs: []Value(T)) ![]Value(T) {
-            for (self.neurons.items) |*n, i| {
-                try n.run(inputs, &self._out.items[i]);
+        pub fn writeGraphVizInternals(self: *Self, str_builder: *std.ArrayList(u8), cluster: bool) !void {
+            var writer = str_builder.writer();
+            if (cluster) {
+                _ = try writer.print("\nsubgraph \"cluster_{*}\" {{\n", .{self});
+            }
+            for (self.neurons.items) |*n| {
+                try n.writeGraphVizInternals(str_builder, cluster);
+            }
+            if (cluster) {
+                _ = try writer.write("}\n");
+            }
+            _ = try writer.print("\nsubgraph \"cluster_{*}\" {{\n", .{&self._out});
+            for (self._out.items) |*v| {
+                try v.writeGraphVizInternals(str_builder, cluster);
+            }
+            _ = try writer.write("}\n");
+        }
+
+        pub fn run(self: *Self, comptime InputT: type, inputs: []InputT) ![]Value(T) {
+            var i : usize = 0;
+            while (i < self.neurons.items.len) : (i += 1) {
+                try self.neurons.items[i].run(InputT, inputs, &self._out.items[i]);
             }
             return self._out.items;
+        }
+
+        pub fn backward(self: *Self, alloc: std.mem.Allocator) !void {
+            for (self._out.items) |*o| {
+                try o.backward(alloc);
+            }
         }
 
         pub fn params(alloc: std.mem.Allocator, self: *Self) !std.ArrayList(Value(T)) {
@@ -180,10 +227,35 @@ pub fn MLP(comptime T: type) type {
             self.layers.deinit();
         }
 
-        pub fn run(self: *Self, input: []Value(T)) ![]Value(T) {
-            var vals : []Value(T) = input;
-            for (self.layers.items) |*layer| {
-                vals = try layer.run(vals);
+        pub fn writeGraphVizInternals(self: *Self, str_builder: *std.ArrayList(u8), cluster: bool) !void {
+            for (self.layers.items) |*l| {
+                try l.writeGraphVizInternals(str_builder, cluster);
+            }
+        }
+
+        pub fn toGraphViz(self: *Self, alloc: std.mem.Allocator, cluster: bool) !std.ArrayList(u8) {
+            var str_builder = std.ArrayList(u8).init(alloc);
+            var writer = str_builder.writer();
+            _ = try writer.write("\ndigraph nodes {\n\tnode [shape=record];\n");
+            // self contained cluster to keep input outside
+            _ = try writer.write("\tsubgraph cluster_1 {input [label=\"input\"];}\n");
+
+            try self.writeGraphVizInternals(&str_builder, cluster);
+
+            _ = try writer.write("}\n");
+            return str_builder;
+        }
+
+        pub fn backward(self: *Self, alloc: std.mem.Allocator) !void {
+            for (self.layers.items) |*l| {
+                try l.backward(alloc);
+            }
+        }
+
+        pub fn run(self: *Self, input: []T) ![]Value(T) {
+            var vals : []Value(T) = try self.layers.items[0].run(T, input);
+            for (self.layers.items[1..]) |*layer| {
+                vals = try layer.run(Value(T), vals);
             }
             return vals;
         }
@@ -217,24 +289,19 @@ pub fn MLP(comptime T: type) type {
 //     }
 // }
 
-
 test "mlp run" {
     var prng = std.rand.DefaultPrng.init(1);
     var rand = prng.random();
-    var sizes : []const usize = &.{3, 4, 1};
+    var sizes : []const usize = &.{3, 4, 6, 6, 9};
     var mlp = try MLP(f32).init(tac, rand, sizes);
     defer mlp.deinit();
-    var x : [3]Value(f32) = .{
-        try Value(f32).init(tac, 1),
-        try Value(f32).init(tac, 2),
-        try Value(f32).init(tac, 3),
+    var x : [3]f32 = .{
+        1, 2, 3,
     };
-    var outs = try mlp.run(x[0..]);
-    try outs[0].backward(tac);
-    var graph = try outs[0].toGraphViz(tac);
+    var outs = try mlp.run(&x);
+    _ = outs;
+    try mlp.backward(tac);
+    var graph = try mlp.toGraphViz(tac, false);
     defer graph.deinit();
     std.debug.print("\n{s}\n", .{graph.items});
-    for (x[0..]) |*v| {
-        v.deinit();
-    }
 }
